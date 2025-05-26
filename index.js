@@ -1,11 +1,32 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const express = require('express');
+import express from 'express';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: {
+        error: 'Too many requests, please try again later.',
+        code: 429
+    }
+});
+app.use('/api', limiter);
 
 class CookpadScraper {
     constructor() {
         this.client = axios.create({
             baseURL: 'https://cookpad.com',
+            timeout: 30000, // 30 second timeout
             headers: {
                 'accept': 'text/html, application/xhtml+xml',
                 'accept-language': 'id-ID,id;q=0.9',
@@ -50,25 +71,22 @@ class CookpadScraper {
                     ingredientsList.push(ingredientText);
                 }
             });
-            recipeDetails.ingredients = ingredientsList.length > 0 ? ingredientsList : ['N/A'];
+            recipeDetails.ingredients = ingredientsList.length > 0 ? ingredientsList.join(' • ') : 'N/A';
 
             const stepsList = [];
             $('#steps ol.list-none li.step').each((_, element) => {
                 const stepNumber = $(element).find('.flex-shrink-0 > div').text().trim();
                 const stepText = $(element).find('div[dir="auto"] p').text().trim();
                 if (stepText) {
-                    stepsList.push({
-                        step: stepNumber,
-                        instruction: stepText
-                    });
+                    stepsList.push(`${stepNumber}. ${stepText}`);
                 }
             });
-            recipeDetails.steps = stepsList.length > 0 ? stepsList : [{step: '1', instruction: 'N/A'}];
+            recipeDetails.steps = stepsList.length > 0 ? stepsList.join('\n') : 'N/A';
 
             return recipeDetails;
 
         } catch (error) {
-            console.error(`Error fetching details from ${url}:`, error.message);
+            console.error(`Error getting details from ${url}:`, error.message);
             return null;
         }
     }
@@ -131,6 +149,7 @@ class CookpadScraper {
                         ingredientsArray = ['N/A'];
                      }
                 }
+                const ingredients = Array.isArray(ingredientsArray) ? ingredientsArray.join(' • ') : (ingredientsArray || 'N/A');
 
                 const authorName = el.find('div.flex.items-center span.break-all span').first().text().trim() || 'N/A';
                 
@@ -148,124 +167,176 @@ class CookpadScraper {
                 initialRecipes.push({
                     id: el.attr('id')?.replace('recipe_', '') || null,
                     title: title,
-                    url: link,
-                    ingredients: ingredientsArray,
+                    link: link,
+                    ingredients: ingredients,
                     author: authorName,
                     author_avatar: authorAvatar,
                     image: recipeImage
                 });
             });
 
-            // Get details for each recipe
+            // Get details for each found recipe
             const detailedRecipes = [];
             for (const recipe of initialRecipes) {
-                const details = await this.getRecipeDetails(recipe.url);
+                const details = await this.getRecipeDetails(recipe.link);
                 if (details) {
                     detailedRecipes.push({
                         ...recipe,
                         details: details
                     });
                 }
-                // Add delay to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
             return {
-                status: 'success',
-                query: query,
-                total_results: total,
-                results_returned: detailedRecipes.length,
-                recipes: detailedRecipes
+                total: total,
+                list: detailedRecipes
             };
 
         } catch (error) {
             console.error(`Error searching for "${query}":`, error.message);
             return {
-                status: 'error',
-                message: error.message,
-                query: query,
-                total_results: 0,
-                recipes: []
+                total: 0,
+                list: []
             };
         }
     }
 }
 
-// Create Express app
-const app = express();
-const port = process.env.PORT || 3000;
+// Initialize scraper
 const scraper = new CookpadScraper();
-
-// Middleware
-app.use(express.json());
 
 // Routes
 app.get('/', (req, res) => {
     res.json({
         message: 'Cookpad Scraper API',
+        version: '1.0.0',
         endpoints: {
-            search: '/search?query=FOOD_NAME&limit=NUMBER',
-            recipe: '/recipe?url=RECIPE_URL'
+            search: '/api/search?query=<search_term>&limit=<number>',
+            recipe: '/api/recipe?url=<recipe_url>',
+            health: '/health'
         }
     });
 });
 
-app.get('/search', async (req, res) => {
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Search recipes endpoint
+app.get('/api/search', async (req, res) => {
     try {
-        const query = req.query.query || 'nasi goreng';
-        const limit = parseInt(req.query.limit) || 5;
+        const { query = 'cilok', limit = 10 } = req.query;
         
-        if (limit > 10) {
+        // Validate parameters
+        const searchLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 50); // Max 50 recipes
+        
+        if (!query || query.trim() === '') {
             return res.status(400).json({
-                status: 'error',
-                message: 'Maximum limit is 10'
+                error: 'Query parameter is required',
+                code: 400
             });
         }
 
-        const results = await scraper.search({ query, limit });
-        res.json(results);
+        console.log(`Searching for: ${query}, limit: ${searchLimit}`);
+        
+        const result = await scraper.search({
+            query: query.toString().trim(),
+            limit: searchLimit
+        });
+
+        res.json({
+            success: true,
+            data: result,
+            query: query,
+            limit: searchLimit,
+            timestamp: new Date().toISOString()
+        });
+
     } catch (error) {
+        console.error('Search error:', error);
         res.status(500).json({
-            status: 'error',
-            message: error.message
+            error: 'Internal server error while searching recipes',
+            code: 500,
+            timestamp: new Date().toISOString()
         });
     }
 });
 
-app.get('/recipe', async (req, res) => {
+// Get single recipe details endpoint
+app.get('/api/recipe', async (req, res) => {
     try {
-        const url = req.query.url;
+        const { url } = req.query;
         
         if (!url) {
             return res.status(400).json({
-                status: 'error',
-                message: 'URL parameter is required'
+                error: 'URL parameter is required',
+                code: 400
             });
         }
 
-        const details = await scraper.getRecipeDetails(url);
+        // Validate URL format
+        if (!url.includes('cookpad.com')) {
+            return res.status(400).json({
+                error: 'Invalid Cookpad URL',
+                code: 400
+            });
+        }
+
+        console.log(`Getting recipe details for: ${url}`);
         
+        const details = await scraper.getRecipeDetails(url);
+
         if (!details) {
             return res.status(404).json({
-                status: 'error',
-                message: 'Recipe not found'
+                error: 'Recipe not found or could not be scraped',
+                code: 404
             });
         }
 
         res.json({
-            status: 'success',
+            success: true,
+            data: details,
             url: url,
-            recipe: details
+            timestamp: new Date().toISOString()
         });
+
     } catch (error) {
+        console.error('Recipe details error:', error);
         res.status(500).json({
-            status: 'error',
-            message: error.message
+            error: 'Internal server error while getting recipe details',
+            code: 500,
+            timestamp: new Date().toISOString()
         });
     }
 });
 
-// Start server
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        error: 'Endpoint not found',
+        code: 404,
+        message: 'Please check the API documentation at the root endpoint'
+    });
 });
+
+// Error handler
+app.use((error, req, res, next) => {
+    console.error('Unhandled error:', error);
+    res.status(500).json({
+        error: 'Internal server error',
+        code: 500,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Cookpad Scraper API running on port ${PORT}`);
+    console.log(`📚 API Documentation available at http://localhost:${PORT}`);
+});
+
+export default app;
