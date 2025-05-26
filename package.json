@@ -1,17 +1,31 @@
 {
-  "name": "cookpad-scraper",
+  "name": "cookpad-scraper-api",
   "version": "1.0.0",
+  "description": "API server for scraping Cookpad recipes",
   "type": "module",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "cookpad",
+    "scraper",
+    "recipe",
+    "api",
+    "express"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.7",
-    "cheerio": "^1.0.0-rc.12",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.1.5",
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.0.0"
   }
 }
