@@ -19,6 +19,20 @@ app.get('/scrape', async (req, res) => {
   }
 });
 
+// Endpoint untuk pencarian resep
+app.get('/search', async (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.status(400).json({ success: false, error: 'Query kosong. Tambahkan ?q=...' });
+
+  try {
+    const results = await scrapeData(query); // kirim query ke scraper
+    res.json({ success: true, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
 // Jalankan server
 app.listen(PORT, () => {
   console.log(`Server berjalan di http://localhost:${PORT}`);
